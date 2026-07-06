@@ -543,7 +543,7 @@ textarea {
 }
 
 .library-form {
-  grid-template-columns: minmax(120px, 0.7fr) minmax(150px, 1fr) minmax(210px, 1.2fr) 92px 104px auto;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .question-form {
