@@ -16,9 +16,17 @@ export type Goal = {
   id: string;
   title: string;
   activity: ActivityType;
-  targetDate: string;
+  startDate?: string;
+  targetDate?: string;
   progress: number;
-  nextStep: string;
+  nextStep?: string;
+  status?: "on-track" | "behind" | "ahead" | "unknown";
+  steps?: {
+    id: string;
+    title: string;
+    progress: number;
+    done: boolean;
+  }[];
 };
 
 export type DailyTarget = {
@@ -53,7 +61,17 @@ export type QuizQuestion = {
   id: string;
   topicId: string;
   prompt: string;
-  options: string[];
-  answer: number;
+  options?: string[];
+  answer?: number;
+  marks?: number;
   explanation: string;
+};
+
+export type PracticeSet = {
+  id: string;
+  title: string;
+  questions: QuizQuestion[];
+  topicId?: string;
+  tier?: string;
+  createdAt: number;
 };
