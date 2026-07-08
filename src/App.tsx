@@ -570,6 +570,32 @@ function parseTime(value: string) {
   return hours * 60 + minutes;
 }
 
+function normalizeHexColor(value: string) {
+  const trimmed = value.trim();
+  return /^#[0-9a-f]{6}$/i.test(trimmed) ? trimmed : "#1f7ac4";
+}
+
+function getEventAppearance(block: TimeBlock) {
+  const fallback = activityMeta[block.activity];
+  const accent = normalizeHexColor(block.color || fallback.color);
+  const backgroundStyle = block.backgroundStyle || "solid";
+
+  let background = `linear-gradient(180deg, ${hexToRgba(accent, 0.16)} 0%, ${hexToRgba(accent, 0.1)} 100%)`;
+  if (backgroundStyle === "gradient") {
+    background = `linear-gradient(135deg, ${hexToRgba(accent, 0.3)} 0%, ${hexToRgba(accent, 0.12)} 100%)`;
+  }
+  if (backgroundStyle === "striped") {
+    background = `repeating-linear-gradient(135deg, ${hexToRgba(accent, 0.26)} 0px, ${hexToRgba(accent, 0.26)} 10px, ${hexToRgba(accent, 0.12)} 10px, ${hexToRgba(accent, 0.12)} 20px)`;
+  }
+
+  return {
+    accent,
+    background,
+    borderColor: hexToRgba(accent, 0.45),
+    textColor: "#102a43",
+  };
+}
+
 function gcd(a: number, b: number): number {
   return b === 0 ? a : gcd(b, a % b);
 }
@@ -648,22 +674,19 @@ type GcseMathPattern = {
   };
 };
 
-function getAoTagForStep(marks: number, index: number) {
-  if (marks < 4) return "";
-  const aoCycle = marks >= 6 ? ["AO1", "AO2", "AO3", "AO2", "AO3", "AO1"] : ["AO1", "AO2", "AO3", "AO2"];
-  return aoCycle[index % aoCycle.length];
-}
+type MarkSchemeStep = {
+  text: string;
+  marks: number;
+};
 
-function formatExamBoardMarkScheme(marks: number, steps: string[]) {
-  const cleaned = steps.filter(Boolean);
+function formatExamBoardMarkScheme(marks: number, steps: MarkSchemeStep[]) {
+  const cleaned = steps.filter((step) => step.text.trim().length > 0 && step.marks > 0);
   const lines = [
     `Exam-board style mark scheme (${marks} marks)`,
-    ...cleaned.map((step, index) => {
-      const ao = getAoTagForStep(marks, index);
-      const aoPrefix = ao ? `[${ao}] ` : "";
-      return `• Step ${index + 1} (1 mark): ${aoPrefix}Award 1 mark for ${step}`;
-    }),
-    `Full marks criteria: ${marks}/${marks} requires complete, logically ordered working with an accurate final answer.`,
+    ...cleaned.map((step, index) =>
+      `• Step ${index + 1} (${step.marks} ${step.marks === 1 ? "mark" : "marks"}): Award ${step.marks} ${step.marks === 1 ? "mark" : "marks"} for ${step.text}`,
+    ),
+    `Full marks criteria: ${marks}/${marks} requires accurate, clearly shown working and a correct final answer.`,
   ];
   return lines.join("\n");
 }
@@ -683,14 +706,97 @@ function extractWorkingSteps(rawExplanation: string) {
     .split(/[.;]+|,\s*(?=\d+\s*mark\b)|,\s*(?=mark\b)/i)
     .map((part) =>
       part
+        .replace(/^exam-board style mark scheme\s*\([^)]*\)\s*/i, "")
         .replace(/^step\s*\d+\s*\(\s*\d+\s*marks?\s*\):\s*/i, "")
-        .replace(/^\[AO[123]\]\s*/i, "")
         .replace(/^award\s*\d+\s*marks?\s*for\s*/i, "")
         .replace(/^\d+\s*mark\s*for\s*/i, "")
         .replace(/^mark\s*for\s*/i, "")
         .trim(),
     )
     .filter((part) => part.length > 8);
+}
+
+function extractMarkedSteps(rawExplanation: string): MarkSchemeStep[] {
+  const segments = rawExplanation
+    .replace(/Mark scheme[^:]*:\s*/gi, "")
+    .split(/[.;]+/)
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+
+  const steps = segments
+    .map((segment) => {
+      const normalized = segment
+        .replace(/^•\s*/i, "")
+        .replace(/^exam-board style mark scheme\s*\([^)]*\)\s*/i, "")
+        .replace(/^step\s*\d+\s*\(\s*\d+\s*marks?\s*\):\s*/i, "")
+        .trim();
+
+      if (!normalized || /^exam-board style/i.test(normalized)) return null;
+
+      const explicitMarks = normalized.match(/^(\d+)\s*marks?\s*for\s+(.+)$/i);
+      if (explicitMarks) {
+        return {
+          marks: Math.max(1, Number(explicitMarks[1])),
+          text: explicitMarks[2].trim(),
+        };
+      }
+
+      const awardMarks = normalized.match(/^award\s*(\d+)\s*marks?\s*for\s+(.+)$/i);
+      if (awardMarks) {
+        return {
+          marks: Math.max(1, Number(awardMarks[1])),
+          text: awardMarks[2].trim(),
+        };
+      }
+
+      const oneMark = normalized.match(/^mark\s*for\s+(.+)$/i);
+      if (oneMark) {
+        return {
+          marks: 1,
+          text: oneMark[1].trim(),
+        };
+      }
+
+      return {
+        marks: 1,
+        text: normalized,
+      };
+    })
+    .filter((step): step is MarkSchemeStep => Boolean(step && step.text.length > 8));
+
+  return steps;
+}
+
+function cleanStepText(step: string) {
+  let cleaned = step.trim();
+  cleaned = cleaned.replace(/^exam-board style mark scheme\s*\([^)]*\)\s*/i, "");
+  for (let i = 0; i < 4; i += 1) {
+    cleaned = cleaned.replace(/^award\s*\d+\s*marks?\s*for\s*/i, "");
+  }
+  return cleaned.replace(/\s+/g, " ").trim();
+}
+
+function distributeMarksAcrossSteps(totalMarks: number, stepTexts: string[]): MarkSchemeStep[] {
+  const cleaned = Array.from(new Set(stepTexts.map((step) => step.trim()).filter(Boolean)));
+  if (!cleaned.length) {
+    return [{ marks: totalMarks, text: "a complete and correct method with the final answer" }];
+  }
+
+  if (cleaned.length >= totalMarks) {
+    return cleaned.slice(0, totalMarks).map((text) => ({ text, marks: 1 }));
+  }
+
+  const allocated = cleaned.map((text) => ({ text, marks: 1 }));
+  let remaining = totalMarks - allocated.length;
+  let index = 0;
+
+  while (remaining > 0) {
+    allocated[index % allocated.length].marks += 1;
+    remaining -= 1;
+    index += 1;
+  }
+
+  return allocated;
 }
 
 function buildLongAnswerPrompt(prompt: string, index: number, marks: number) {
@@ -936,33 +1042,47 @@ function extractNumericMethodSteps(prompt: string, rawExplanation: string) {
 }
 
 function toExamBoardMarkScheme(prompt: string, rawExplanation: string, marks: number, isMathsQuestion = false) {
-  const parsed = extractWorkingSteps(rawExplanation);
+  const hasRecursiveSchemeLoop = /(exam-board style\s+award\s+(?:\d+\s+marks?\s+)?for\s*){2,}/i.test(rawExplanation);
+  const parsed = hasRecursiveSchemeLoop ? [] : extractWorkingSteps(rawExplanation);
+  const parsedMarked = hasRecursiveSchemeLoop ? [] : extractMarkedSteps(rawExplanation);
   const workedMathSteps = isMathsQuestion ? deriveWorkedMathSteps(prompt, rawExplanation) : [];
   const mathsMethodSteps = isMathsQuestion ? extractNumericMethodSteps(prompt, rawExplanation) : [];
-  const steps = isMathsQuestion && workedMathSteps.length
+  const steps = (isMathsQuestion
     ? [...workedMathSteps, ...mathsMethodSteps, ...parsed]
-    : [...parsed, ...mathsMethodSteps];
+    : [...parsed, ...mathsMethodSteps]).map(cleanStepText).filter(Boolean);
   const commandWordMatch = prompt.trim().match(/^(Work out|Calculate|Determine|Explain|Justify|Evaluate|Prove|Show that)\b/i);
   const commandWord = commandWordMatch ? commandWordMatch[0] : "Solve";
 
+  const promptNumbers = Array.from(new Set(prompt.match(/\b\d+(?:\.\d+)?\b/g) ?? [])).slice(0, 4);
+
   if (!steps.length) {
-    steps.push("Select the correct method that matches the command word in the question.");
+    if (promptNumbers.length) {
+      steps.push(`Use the values from the question (${promptNumbers.join(", ")}) in a valid method line.`);
+    } else {
+      steps.push("Set out a valid first method line that directly matches the command word.");
+    }
   }
 
-  if (!(isMathsQuestion && workedMathSteps.length)) {
-    steps.push("Set out the method in a clear first line before carrying out calculations.");
-    if (marks >= 2) steps.push("Substitute all given values accurately and keep units consistent.");
-    if (marks >= 3) steps.push("Show a valid intermediate line so method marks can be awarded.");
-    if (marks >= 4) steps.push("Use mathematically correct notation and justified transformations.");
-    if (marks >= 5) steps.push(`Address the command word \"${commandWord}\" directly with clear reasoning.`);
-    if (marks >= 6) steps.push("Conclude with a fully justified final statement and a reasonableness check.");
+  if (!isMathsQuestion) {
+    if (marks >= 2) steps.push("Include a clear intermediate line that supports the final answer.");
+    if (marks >= 4) steps.push(`Directly answer the command word \"${commandWord}\" using evidence from the question.`);
+  } else if (!workedMathSteps.length) {
+    if (promptNumbers.length >= 2) {
+      steps.push(`Substitute the given numbers (${promptNumbers.slice(0, 2).join(" and ")}) accurately into the method.`);
+    }
+    steps.push("Show at least one intermediate calculation before giving the final answer.");
   }
 
-  const uniqueSteps = Array.from(new Set(steps));
-  while (uniqueSteps.length < marks) {
-    uniqueSteps.push("Add one more explicit line of valid working that supports the conclusion.");
+  const uniqueSteps = Array.from(new Set(steps.map((step) => step.trim()).filter(Boolean)));
+  while (uniqueSteps.length < Math.min(marks, 3)) {
+    uniqueSteps.push("Add another explicit line of valid working.");
   }
-  const selectedSteps = uniqueSteps.slice(0, marks);
+
+  const selectedSteps = isMathsQuestion
+    ? distributeMarksAcrossSteps(marks, uniqueSteps)
+    : parsedMarked.length
+      ? distributeMarksAcrossSteps(marks, parsedMarked.map((step) => cleanStepText(step.text)).filter(Boolean))
+      : distributeMarksAcrossSteps(marks, uniqueSteps);
 
   return formatExamBoardMarkScheme(marks, selectedSteps);
 }
@@ -973,14 +1093,19 @@ function getMarkSchemeSummary(explanation: string) {
     .map((line) => line.trim())
     .filter(Boolean);
   const firstStep = lines.find((line) => line.startsWith("• "));
-  if (firstStep) {
-    return firstStep
-      .replace(/^•\s*step\s*\d+\s*\(\s*\d+\s*marks?\s*\):\s*/i, "")
-      .replace(/^•\s*\d+\.\s*/, "")
-      .replace(/^\[AO[123]\]\s*/i, "")
-      .replace(/^award\s*\d+\s*marks?\s*for\s*/i, "");
-  }
-  return lines[0] || "Mark scheme available";
+  const fallback = lines.find((line) => !line.toLowerCase().startsWith("exam-board style")) || lines[0] || "Mark scheme available";
+  const source = firstStep || fallback;
+  const cleaned = source
+    .replace(/^•\s*step\s*\d+\s*\(\s*\d+\s*marks?\s*\):\s*/i, "")
+    .replace(/^•\s*\d+\.\s*/, "")
+    .replace(/^award\s*(?:\d+\s*marks?)?\s*for\s*/i, "")
+    .replace(/exam-board style\s*/gi, "")
+    .replace(/(award\s*(?:\d+\s*marks?)?\s*for\s*){2,}/gi, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  const capped = cleaned.length > 180 ? `${cleaned.slice(0, 177)}...` : cleaned;
+
+  return capped || "Mark scheme available";
 }
 
 type AiMarkingResult = {
@@ -996,7 +1121,6 @@ type AiMarkingResult = {
 
 type ExaminerProfile = {
   label: string;
-  aoWeights: { AO1: number; AO2: number; AO3: number };
   highMarkMinLength: number;
   requiresReasoningForTopBand: boolean;
   requiresFinalJudgementForTopBand: boolean;
@@ -1010,7 +1134,6 @@ function getExaminerProfile(topicId: string): ExaminerProfile {
   if (subject === "maths") {
     return {
       label: "Maths examiner",
-      aoWeights: { AO1: 1.1, AO2: 1.25, AO3: 1.05 },
       highMarkMinLength: 120,
       requiresReasoningForTopBand: true,
       requiresFinalJudgementForTopBand: true,
@@ -1022,7 +1145,6 @@ function getExaminerProfile(topicId: string): ExaminerProfile {
   if (subject === "english") {
     return {
       label: "English examiner",
-      aoWeights: { AO1: 1.0, AO2: 1.3, AO3: 1.2 },
       highMarkMinLength: 180,
       requiresReasoningForTopBand: true,
       requiresFinalJudgementForTopBand: true,
@@ -1034,7 +1156,6 @@ function getExaminerProfile(topicId: string): ExaminerProfile {
   if (subject === "physics" || subject === "chemistry") {
     return {
       label: "Science examiner",
-      aoWeights: { AO1: 1.1, AO2: 1.2, AO3: 1.2 },
       highMarkMinLength: 150,
       requiresReasoningForTopBand: true,
       requiresFinalJudgementForTopBand: true,
@@ -1046,7 +1167,6 @@ function getExaminerProfile(topicId: string): ExaminerProfile {
   if (subject === "cadets") {
     return {
       label: "Cadet training examiner",
-      aoWeights: { AO1: 1.05, AO2: 1.2, AO3: 1.15 },
       highMarkMinLength: 140,
       requiresReasoningForTopBand: true,
       requiresFinalJudgementForTopBand: true,
@@ -1058,7 +1178,6 @@ function getExaminerProfile(topicId: string): ExaminerProfile {
   if (subject === "football") {
     return {
       label: "Performance examiner",
-      aoWeights: { AO1: 1.0, AO2: 1.2, AO3: 1.2 },
       highMarkMinLength: 140,
       requiresReasoningForTopBand: true,
       requiresFinalJudgementForTopBand: true,
@@ -1069,7 +1188,6 @@ function getExaminerProfile(topicId: string): ExaminerProfile {
 
   return {
     label: "General examiner",
-    aoWeights: { AO1: 1.05, AO2: 1.15, AO3: 1.1 },
     highMarkMinLength: 130,
     requiresReasoningForTopBand: true,
     requiresFinalJudgementForTopBand: true,
@@ -1080,7 +1198,7 @@ function getExaminerProfile(topicId: string): ExaminerProfile {
 
 type MarkSchemeCriterion = {
   text: string;
-  ao?: "AO1" | "AO2" | "AO3";
+  marks: number;
 };
 
 function getMarkSchemeCriteria(explanation: string): MarkSchemeCriterion[] {
@@ -1089,16 +1207,14 @@ function getMarkSchemeCriteria(explanation: string): MarkSchemeCriterion[] {
     .map((line) => line.trim())
     .filter((line) => line.startsWith("• "))
     .map((line) => {
-      const cleaned = line
+      const marksMatch = line.match(/^•\s*step\s*\d+\s*\(\s*(\d+)\s*marks?\s*\):/i);
+      const marks = marksMatch ? Math.max(1, Number(marksMatch[1])) : 1;
+      const text = line
         .replace(/^•\s*step\s*\d+\s*\(\s*\d+\s*marks?\s*\):\s*/i, "")
-        .replace(/^•\s*\d+\.\s*/, "");
-      const aoMatch = cleaned.match(/^\[(AO[123])\]\s*/i);
-      const ao = aoMatch ? (aoMatch[1].toUpperCase() as "AO1" | "AO2" | "AO3") : undefined;
-      const text = cleaned
-        .replace(/^\[AO[123]\]\s*/i, "")
+        .replace(/^•\s*\d+\.\s*/, "")
         .replace(/^award\s*\d+\s*marks?\s*for\s*/i, "")
         .trim();
-      return { text, ao };
+      return { text, marks };
     })
     .filter((criterion) => criterion.text.length > 0);
 }
@@ -1157,12 +1273,54 @@ function scoreCriterionAgainstAnswer(criterion: MarkSchemeCriterion, normalizedA
   return Math.max(0, Math.min(1, score));
 }
 
+function scoreMathsCriterionAgainstAnswer(criterion: MarkSchemeCriterion, normalizedAnswer: string) {
+  const expectedNumbers = extractNumberTokens(criterion.text);
+  const keywords = extractKeywords(criterion.text).slice(0, 8);
+  const numberHits = expectedNumbers.filter((token) => new RegExp(`\\b${token}\\b`).test(normalizedAnswer)).length;
+  const numberCoverage = expectedNumbers.length ? numberHits / expectedNumbers.length : 0;
+  const keywordHits = keywords.filter((keyword) => normalizedAnswer.includes(keyword)).length;
+  const keywordCoverage = keywords.length ? keywordHits / keywords.length : 0;
+  const criterionHasMathStructure = /[=×÷*/+\-]/.test(criterion.text);
+  const answerHasMathStructure = /[=×÷*/+\-]/.test(normalizedAnswer);
+
+  let score = 0;
+
+  if (numberCoverage >= 0.75) score = 0.85;
+  else if (numberCoverage >= 0.5) score = 0.65;
+  else if (numberCoverage >= 0.25) score = 0.4;
+
+  if (keywordCoverage >= 0.5 || keywordHits >= 2) {
+    score = Math.max(score, 0.7);
+  } else if (keywordCoverage >= 0.2 || keywordHits === 1) {
+    score = Math.max(score, 0.45);
+  }
+
+  if (criterionHasMathStructure && answerHasMathStructure) {
+    score += 0.15;
+  }
+
+  if (!expectedNumbers.length && keywords.length && keywordHits === 0) {
+    score = 0;
+  }
+
+  return Math.max(0, Math.min(1, score));
+}
+
+function convertMathsCoverageToMarks(coverage: number, criterionMarks: number) {
+  if (coverage >= 0.85) return criterionMarks;
+  if (coverage >= 0.65) return Math.max(1, criterionMarks - 1);
+  if (coverage >= 0.45 && criterionMarks >= 3) return 1;
+  return 0;
+}
+
 function markAnswerWithAiExaminer(prompt: string, topicId: string, answer: string, explanation: string, maxMarks: number): AiMarkingResult {
   const profile = getExaminerProfile(topicId);
+  const subject = getTopicSubject(topicId);
+  const isMathsQuestion = subject === "maths";
   const criteria = getMarkSchemeCriteria(explanation);
   const effectiveCriteria = criteria.length
     ? criteria
-    : [{ text: "Provide a correct method with clear working and a justified final answer." }];
+    : [{ text: "Provide a correct method with clear working and a justified final answer.", marks: Math.max(1, maxMarks) }];
   const normalizedAnswer = answer.toLowerCase();
   const compactAnswer = normalizedAnswer.replace(/\s+/g, " ");
 
@@ -1181,15 +1339,19 @@ function markAnswerWithAiExaminer(prompt: string, topicId: string, answer: strin
 
   const matched: string[] = [];
   const missed: string[] = [];
-  let weightedHits = 0;
+  let awardedFromCriteria = 0;
 
   for (const criterion of effectiveCriteria) {
-    const criterionScore = scoreCriterionAgainstAnswer(criterion, compactAnswer);
-    const weight = criterion.ao ? profile.aoWeights[criterion.ao] : profile.aoWeights.AO1;
-    weightedHits += criterionScore * weight;
+    const criterionScore = isMathsQuestion
+      ? scoreMathsCriterionAgainstAnswer(criterion, compactAnswer)
+      : scoreCriterionAgainstAnswer(criterion, compactAnswer);
+    const awardedMarks = isMathsQuestion
+      ? convertMathsCoverageToMarks(criterionScore, criterion.marks)
+      : Math.round(criterionScore * criterion.marks);
+    awardedFromCriteria += awardedMarks;
 
-    const label = criterion.ao ? `[${criterion.ao}] ${criterion.text}` : criterion.text;
-    if (criterionScore >= 1) {
+    const label = `${criterion.text} (${awardedMarks}/${criterion.marks})`;
+    if (awardedMarks > 0) {
       matched.push(label);
     } else {
       missed.push(label);
@@ -1201,8 +1363,8 @@ function markAnswerWithAiExaminer(prompt: string, topicId: string, answer: strin
   const hasFinalJudgement = /\bfinal answer\b|\btherefore\b|\bhence\b|\bso the answer\b|\bconclusion\b/.test(compactAnswer);
   const hasSubjectEvidence = profile.subjectEvidenceRegex.test(compactAnswer);
 
-  const denominator = effectiveCriteria.reduce((sum, criterion) => sum + (criterion.ao ? profile.aoWeights[criterion.ao] : profile.aoWeights.AO1), 0);
-  const criteriaRatio = denominator > 0 ? weightedHits / denominator : 0;
+  const denominator = Math.max(1, effectiveCriteria.reduce((sum, criterion) => sum + criterion.marks, 0));
+  const criteriaRatio = Math.max(0, Math.min(1, awardedFromCriteria / denominator));
 
   let qualityAdjustment = 0;
   if (hasReasoningLanguage) qualityAdjustment += 0.04;
@@ -1215,7 +1377,13 @@ function markAnswerWithAiExaminer(prompt: string, topicId: string, answer: strin
   if (hasSubjectEvidence) qualityAdjustment += 0.05;
 
   const calibratedRatio = Math.max(0, Math.min(1, criteriaRatio + qualityAdjustment));
-  let score = Math.round(calibratedRatio * maxMarks);
+  let score = isMathsQuestion
+    ? Math.min(maxMarks, awardedFromCriteria)
+    : Math.round(calibratedRatio * maxMarks);
+
+  if (!isMathsQuestion) {
+    score = Math.round(calibratedRatio * maxMarks);
+  }
 
   if (
     maxMarks >= 5 &&
@@ -1245,12 +1413,12 @@ function markAnswerWithAiExaminer(prompt: string, topicId: string, answer: strin
 
   const examinerJudgement =
     band === "Top band"
-      ? `Examiner judgement (${profile.label}): response meets top-band standard with secure method, reasoning, and a clear final judgement for \"${commandWord}\".`
+      ? `Examiner judgement (${profile.label}): response meets top-band standard with secure step coverage and a clear final judgement for \"${commandWord}\".`
       : band === "Secure pass"
-        ? `Examiner judgement (${profile.label}): response is mostly secure but needs tighter subject-specific evidence and clearer top-band justification.`
+        ? `Examiner judgement (${profile.label}): response is mostly secure but needs more complete coverage of the remaining mark-scheme steps.`
         : band === "Developing"
-          ? `Examiner judgement (${profile.label}): response shows partial evidence; add more explicit mark-scheme steps and stronger command-word focus.`
-          : `Examiner judgement (${profile.label}): response has limited examinable evidence and needs structured method lines linked to the subject criteria.`;
+          ? `Examiner judgement (${profile.label}): response shows partial evidence; add more explicit working lines to secure more step marks.`
+          : `Examiner judgement (${profile.label}): response has limited examinable evidence and needs structured method lines linked to the question steps.`;
 
   return {
     score,
@@ -2463,10 +2631,13 @@ function getSuggestedStartForDay(blocks: TimeBlock[], day: number, activity: Act
 function createGoalTrainingBlock(goal: Goal, date: Date, blocks: TimeBlock[], durationMinutes: number): TimeBlock {
   const day = getDayIndex(date);
   const start = getSuggestedStartForDay(blocks, day, goal.activity);
+  const meta = activityMeta[goal.activity];
   return {
     id: `goal-session-${goal.id}-${Date.now()}`,
     title: `${goal.title} session`,
     detail: goal.nextStep ?? "Focused development session",
+    color: meta.color,
+    backgroundStyle: "solid",
     activity: goal.activity,
     day,
     date: toDateKey(date),
@@ -2509,6 +2680,8 @@ function CalendarPage({
   const [detail, setDetail] = useState("Extra development work");
   const [location, setLocation] = useState("");
   const [personalInfo, setPersonalInfo] = useState("");
+  const [eventColor, setEventColor] = useState("#1f7ac4");
+  const [backgroundStyle, setBackgroundStyle] = useState<"solid" | "gradient" | "striped">("solid");
   const [startTime, setStartTime] = useState("16:00");
   const [editingBlockId, setEditingBlockId] = useState<string | null>(null);
 
@@ -2544,6 +2717,8 @@ function CalendarPage({
     setDetail("Extra development work");
     setLocation("");
     setPersonalInfo("");
+    setEventColor(activityMeta.school.color);
+    setBackgroundStyle("solid");
     setStartTime("16:00");
     setEditingBlockId(null);
   }
@@ -2557,6 +2732,8 @@ function CalendarPage({
       detail,
       location: location.trim() || undefined,
       personalInfo: personalInfo.trim() || undefined,
+      color: normalizeHexColor(eventColor),
+      backgroundStyle,
       activity,
       day: selectedDay,
       date: selectedDateKey,
@@ -2579,6 +2756,8 @@ function CalendarPage({
     setDetail(block.detail);
     setLocation(block.location ?? "");
     setPersonalInfo(block.personalInfo ?? "");
+    setEventColor(normalizeHexColor(block.color || activityMeta[block.activity].color));
+    setBackgroundStyle(block.backgroundStyle || "solid");
     setActivity(block.activity);
     setStartTime(toTime(block.start));
     setDurationMinutes(block.end - block.start);
@@ -2668,11 +2847,18 @@ function CalendarPage({
             <div className="calendar-mini-day-list">
               {dayMiniSlots.map((slot, index) =>
                 slot.type === "busy" && slot.block ? (
+                  (() => {
+                    const appearance = getEventAppearance(slot.block);
+                    return (
                   <button
                     key={`${slot.block.id}-${index}`}
                     className="calendar-mini-slot busy"
                     type="button"
                     onClick={() => startEditing(slot.block!)}
+                    style={{
+                      background: appearance.background,
+                      borderColor: appearance.borderColor,
+                    }}
                   >
                     <div>
                       <strong>{slot.block.title}</strong>
@@ -2680,8 +2866,10 @@ function CalendarPage({
                       {slot.block.location && <small>Location: {slot.block.location}</small>}
                       {slot.block.personalInfo && <small>Info: {slot.block.personalInfo}</small>}
                     </div>
-                    <span>{toTime(slot.start)} - {toTime(slot.end)}</span>
+                    <span style={{ color: appearance.accent }}>{toTime(slot.start)} - {toTime(slot.end)}</span>
                   </button>
+                    );
+                  })()
                 ) : (
                   <div key={`free-${index}`} className="calendar-mini-slot free">
                     <div>
@@ -2740,10 +2928,18 @@ function CalendarPage({
                       <span className="month-cell-date">{date.getDate()}</span>
                       <div className="month-cell-events">
                         {dateBlocks.slice(0, 3).map((block) => (
+                          (() => {
+                            const appearance = getEventAppearance(block);
+                            return (
                           <button
                             type="button"
                             className="month-event-pill"
                             key={`${date.toISOString()}-${block.id}`}
+                            style={{
+                              background: appearance.background,
+                              borderColor: appearance.borderColor,
+                              color: appearance.accent,
+                            }}
                             onClick={(event) => {
                               event.stopPropagation();
                               startEditing(block);
@@ -2751,6 +2947,8 @@ function CalendarPage({
                           >
                             {block.title}
                           </button>
+                            );
+                          })()
                         ))}
                         {dateBlocks.length > 3 && <span className="month-event-more">+{dateBlocks.length - 3} more</span>}
                       </div>
@@ -2771,11 +2969,15 @@ function CalendarPage({
             <div className="calendar-agenda-list">
               {dayBlocks.length ? (
                 dayBlocks.map((block) => {
-                  const meta = activityMeta[block.activity];
+                  const appearance = getEventAppearance(block);
                   return (
                     <article
                       className="calendar-agenda-item calendar-event-clickable"
                       key={block.id}
+                      style={{
+                        borderColor: appearance.borderColor,
+                        background: appearance.background,
+                      }}
                       role="button"
                       tabIndex={0}
                       onClick={() => startEditing(block)}
@@ -2792,7 +2994,7 @@ function CalendarPage({
                         {block.location && <small>Location: {block.location}</small>}
                         {block.personalInfo && <small>Info: {block.personalInfo}</small>}
                       </div>
-                      <span style={{ color: meta.color }}>{toTime(block.start)} - {toTime(block.end)}</span>
+                      <span style={{ color: appearance.accent }}>{toTime(block.start)} - {toTime(block.end)}</span>
                       <div className="calendar-agenda-actions">
                         <button
                           className="button subtle compact"
@@ -2836,11 +3038,15 @@ function CalendarPage({
             <div className="calendar-reminder-list">
               {upcomingBlocks.length ? (
                 upcomingBlocks.map(({ block, occurrence }) => {
-                  const meta = activityMeta[block.activity];
+                  const appearance = getEventAppearance(block);
                   return (
                     <article
                       className="calendar-reminder-item calendar-event-clickable"
                       key={`${block.id}-${toDateKey(occurrence)}`}
+                      style={{
+                        borderColor: appearance.borderColor,
+                        background: appearance.background,
+                      }}
                       role="button"
                       tabIndex={0}
                       onClick={() => startEditing(block)}
@@ -2859,7 +3065,7 @@ function CalendarPage({
                       </div>
                       <div className="calendar-reminder-meta">
                         <span>{formatReminderDate(occurrence)}</span>
-                        <small style={{ color: meta.color }}>{toTime(block.start)} - {toTime(block.end)}</small>
+                        <small style={{ color: appearance.accent }}>{toTime(block.start)} - {toTime(block.end)}</small>
                       </div>
                     </article>
                   );
@@ -2900,7 +3106,16 @@ function CalendarPage({
               </label>
               <label>
                 Type
-                <select value={activity} onChange={(event) => setActivity(event.target.value as ActivityType)}>
+                <select
+                  value={activity}
+                  onChange={(event) => {
+                    const nextActivity = event.target.value as ActivityType;
+                    setActivity(nextActivity);
+                    if (!editingBlockId) {
+                      setEventColor(activityMeta[nextActivity].color);
+                    }
+                  }}
+                >
                   {Object.entries(activityMeta).map(([key, meta]) => (
                     <option key={key} value={key}>
                       {meta.label}
@@ -2908,6 +3123,20 @@ function CalendarPage({
                   ))}
                 </select>
               </label>
+              <div className="calendar-style-grid">
+                <label>
+                  Event colour
+                  <input type="color" value={eventColor} onChange={(event) => setEventColor(event.target.value)} />
+                </label>
+                <label>
+                  Event background
+                  <select value={backgroundStyle} onChange={(event) => setBackgroundStyle(event.target.value as "solid" | "gradient" | "striped")}>
+                    <option value="solid">Solid</option>
+                    <option value="gradient">Gradient</option>
+                    <option value="striped">Striped</option>
+                  </select>
+                </label>
+              </div>
               <label>
                 Start
                 <input value={startTime} onChange={(event) => setStartTime(event.target.value)} type="time" required />
@@ -3724,7 +3953,7 @@ function PlannerGrid({ blocks, onSelectBlock }: { blocks: TimeBlock[]; onSelectB
             {blocks
               .filter((block) => block.day === dayIndex)
               .map((block) => {
-                const meta = activityMeta[block.activity];
+                const appearance = getEventAppearance(block);
                 const top = ((block.start - startHour * 60) / 60) * rowHeight;
                 const height = Math.max(34, ((block.end - block.start) / 60) * rowHeight);
                 return (
@@ -3734,9 +3963,9 @@ function PlannerGrid({ blocks, onSelectBlock }: { blocks: TimeBlock[]; onSelectB
                     style={{
                       top,
                       height,
-                      background: meta.soft,
-                      borderColor: meta.border,
-                      color: meta.color,
+                      background: appearance.background,
+                      borderColor: appearance.borderColor,
+                      color: appearance.accent,
                     }}
                     role={onSelectBlock ? "button" : undefined}
                     tabIndex={onSelectBlock ? 0 : undefined}
@@ -5074,7 +5303,7 @@ function PracticePanel({
               <button className="button primary compact" type="button" onClick={markMyAnswer} disabled={!writtenAnswer.trim()}>
                 Mark my answer
               </button>
-              <small>AI examiner uses the mark scheme and AO criteria to estimate your mark.</small>
+              <small>AI examiner uses your question-specific mark-scheme steps to estimate your mark.</small>
             </div>
             {aiMarking && (
               <div className="ai-marking-result" role="status" aria-live="polite">
@@ -5232,10 +5461,25 @@ function App() {
       const seeded = current.map((question) => {
         const marks = getQuestionMarks(question);
         const isMathsQuestion = getTopicSubject(question.topicId) === "maths";
+        const hasCorruptedRecursiveScheme = /(exam-board style\s+award\s+(?:\d+\s+marks?\s+)?for\s*){2,}/i.test(question.explanation);
         const hasPersonalizedMathScheme =
           isMathsQuestion &&
-          /Award\s+1\s+mark\s+for/i.test(question.explanation) &&
+          /^Exam-board style mark scheme/i.test(question.explanation) &&
+          /Step\s+\d+\s*\(\s*\d+\s*marks?\s*\):\s*Award\s+\d+\s+marks?\s+for/i.test(question.explanation) &&
           /[\d=×÷+\-/]/.test(question.explanation);
+
+        if (hasCorruptedRecursiveScheme) {
+          changed = true;
+          return {
+            ...question,
+            explanation: toExamBoardMarkScheme(
+              question.prompt,
+              "",
+              marks,
+              isMathsQuestion,
+            ),
+          };
+        }
 
         if (!isMathsQuestion && (marks < 3 || (marks < 4 && question.explanation.startsWith("Exam-board style")))) {
           return question;
@@ -5243,8 +5487,18 @@ function App() {
         if (isMathsQuestion && hasPersonalizedMathScheme) {
           return question;
         }
-        if (!isMathsQuestion && marks >= 4 && /\[AO[123]\]/.test(question.explanation) && /Award\s+1\s+mark\s+for/i.test(question.explanation)) {
-          return question;
+        const hasLegacyAoScheme = /\[AO[123]\]/.test(question.explanation);
+        if (!isMathsQuestion && marks >= 4 && hasLegacyAoScheme) {
+          changed = true;
+          return {
+            ...question,
+            explanation: toExamBoardMarkScheme(
+              question.prompt,
+              question.explanation,
+              marks,
+              false,
+            ),
+          };
         }
         changed = true;
         return {

@@ -8,6 +8,8 @@ export type TimeBlock = {
   detail: string;
   location?: string;
   personalInfo?: string;
+  color?: string;
+  backgroundStyle?: "solid" | "gradient" | "striped";
   activity: ActivityType;
   day: number;
   date?: string;

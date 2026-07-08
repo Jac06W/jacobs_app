@@ -2854,7 +2854,7 @@ textarea {
 }
 
 .month-event-pill {
-  border: 0;
+  border: 1px solid #d8e6f3;
   width: 100%;
   text-align: left;
   cursor: pointer;
@@ -2895,6 +2895,21 @@ textarea {
 
 .calendar-add-form .button {
   justify-content: center;
+}
+
+.calendar-style-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.calendar-style-grid input[type="color"] {
+  width: 100%;
+  min-height: 44px;
+  border: 1px solid #d8e3ed;
+  border-radius: 12px;
+  padding: 4px;
+  background: #fcfdff;
 }
 
 .calendar-duration-buttons {
@@ -3411,6 +3426,10 @@ textarea {
   }
 
   .calendar-bottom-panels {
+    grid-template-columns: 1fr;
+  }
+
+  .calendar-style-grid {
     grid-template-columns: 1fr;
   }
 
