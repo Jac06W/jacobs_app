@@ -6,8 +6,11 @@ export type TimeBlock = {
   id: string;
   title: string;
   detail: string;
+  location?: string;
+  personalInfo?: string;
   activity: ActivityType;
   day: number;
+  date?: string;
   start: number;
   end: number;
 };
